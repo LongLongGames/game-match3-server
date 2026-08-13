@@ -1,9 +1,10 @@
-name: GameTemplate Deploy
+name: game-match3-server Deploy
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:   # 允许 GitHub 网页手动触发
 
 env:
   REGISTRY: ghcr.io
