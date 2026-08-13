@@ -1,0 +1,10 @@
+<Solution>
+  <Project Path="Game.Shared/Game.Shared.csproj" />
+  <Project Path="Game.User/Game.User.csproj" />
+  <Project Path="Game.Leaderboard/Game.Leaderboard.csproj" />
+  <Project Path="Game.Core/Game.Core.csproj" />
+  <!-- Docker Compose 项目（Visual Studio 虚拟目录） -->
+  <Project Path="../docker-compose.dcproj">
+    <Build />
+  </Project>
+</Solution>
