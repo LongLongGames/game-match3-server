@@ -1,3 +1,5 @@
+> 组织总览与进度：[LongLongGames](https://github.com/LongLongGames) · [Platform Roadmap](https://github.com/orgs/LongLongGames/projects/1)
+
 # game-match3-server
 
 Match3 游戏后端。由 [GameTemplate](https://github.com/LongLongGames/GameTemplate) 复制落地。
@@ -41,17 +43,14 @@ docker compose up -d --build
 | GET | /api/v1/leaderboard/me | 自己的排名 |
 | GET | /api/v1/game/status | JWT 验签示例 |
 
-## 镜像
+## 发布
 
-Tag `v*` 触发构建，推送到：
+Tag `v*` 触发构建：
 
-```
-ghcr.io/longlonggames/game-match3-server/game-user
-ghcr.io/longlonggames/game-match3-server/game-leaderboard
-ghcr.io/longlonggames/game-match3-server/game-core
-```
+- `ghcr.io/longlonggames/game-match3-server/game-user`
+- `ghcr.io/longlonggames/game-match3-server/game-leaderboard`
+- `ghcr.io/longlonggames/game-match3-server/game-core`
 
 ## 技术
 
 .NET 10 Native AOT · Npgsql · DbUp · JWT（与 MP 同 Secret）
-```
