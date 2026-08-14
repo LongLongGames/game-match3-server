@@ -64,8 +64,12 @@ services:
       context: .
       dockerfile: src/Game.Core/Dockerfile
     environment:
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
       Jwt__Secret: ${JWT_SECRET:-CHANGE_ME_TO_A_LONG_RANDOM_SECRET_IN_PRODUCTION}
       Jwt__Issuer: battle-net-mp
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   game-gateway:

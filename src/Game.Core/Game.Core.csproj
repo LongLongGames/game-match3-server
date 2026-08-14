@@ -14,6 +14,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Game.Shared\Game.Shared.csproj" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="dbup-postgresql" Version="7.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Infrastructure/Db/Scripts/*.sql" />
   </ItemGroup>
 
 </Project>
