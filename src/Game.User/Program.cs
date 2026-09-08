@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using DbUp;
 using Game.Shared.Jwt;
@@ -22,7 +21,6 @@ builder.Services.AddSingleton(new NpgsqlDataSourceBuilder(connStr).Build());
 
 var app = builder.Build();
 
-// 启动时自动迁移
 {
     var upgrader = DeployChanges.To
         .PostgresqlDatabase(connStr)
@@ -34,6 +32,8 @@ var app = builder.Build();
     if (!result.Successful)
         throw new Exception("DB migration failed: " + result.Error);
 }
+
+// Match3 规则见 Match3Rules
 
 app.MapGet("/health", () => Results.Ok(new HealthResponse("ok", "game-user")));
 
@@ -54,11 +54,8 @@ app.MapGet("/api/v1/user/profile", async (HttpContext ctx, SimpleJwt jwt, Npgsql
 
     await using var reader = await cmd.ExecuteReaderAsync();
     if (await reader.ReadAsync())
-    {
         return Results.Ok(ReadProfile(reader));
-    }
 
-    // 不存在则自动创建
     await reader.CloseAsync();
     await using var insert = new NpgsqlCommand("""
         INSERT INTO player_profiles (mp_account_id, game_id, nickname)
@@ -67,7 +64,7 @@ app.MapGet("/api/v1/user/profile", async (HttpContext ctx, SimpleJwt jwt, Npgsql
         """, conn);
     insert.Parameters.AddWithValue("mp", Guid.Parse(claims.Sub));
     insert.Parameters.AddWithValue("gid", game_id);
-    insert.Parameters.AddWithValue("nick", "Player_" + claims.Sub[..8]);
+    insert.Parameters.AddWithValue("nick", "Player_" + claims.Sub[..Math.Min(8, claims.Sub.Length)]);
 
     await using var r2 = await insert.ExecuteReaderAsync();
     await r2.ReadAsync();
@@ -86,7 +83,7 @@ app.MapPut("/api/v1/user/profile", async (HttpContext ctx, SimpleJwt jwt, Npgsql
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand("""
         INSERT INTO player_profiles (mp_account_id, game_id, nickname, level, extra_json, updated_at)
-        VALUES (@mp, @gid, @nick, @lv, @extra::jsonb, NOW())
+        VALUES (@mp, @gid, @nick, COALESCE(@lv, 1), COALESCE(@extra::jsonb, '{}'::jsonb), NOW())
         ON CONFLICT (mp_account_id, game_id) DO UPDATE SET
             nickname = COALESCE(NULLIF(@nick, ''), player_profiles.nickname),
             level = COALESCE(@lv, player_profiles.level),
@@ -105,9 +102,298 @@ app.MapPut("/api/v1/user/profile", async (HttpContext ctx, SimpleJwt jwt, Npgsql
     return Results.Ok(ReadProfile(reader));
 });
 
+// ============================================================
+// Match3 玩家状态：体力 / 金币 / 地图进度
+// 关卡棋盘配置在客户端；此处只同步进度与经济。
+// ============================================================
+
+/// <summary>
+/// GET /api/v1/user/state?game_id=match3&amp;map_id=1
+/// 返回体力（含自然恢复后）、金币、已解锁地图、指定图的 20 关进度。
+/// </summary>
+app.MapGet("/api/v1/user/state", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, string game_id, int? map_id) =>
+{
+    if (!TryGetClaims(ctx, jwt, out var claims))
+        return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(game_id))
+        return Results.BadRequest(new { error = "game_id required" });
+
+    var mp = Guid.Parse(claims!.Sub);
+    var mapId = map_id is > 0 ? map_id.Value : 1;
+
+    await using var conn = await ds.OpenConnectionAsync();
+    await EnsureEconomyAsync(conn, mp, game_id);
+    var economy = await LoadAndRegenEnergyAsync(conn, mp, game_id, persist: true);
+
+    var levels = new List<LevelProgressItem>();
+    await using (var cmd = new NpgsqlCommand("""
+        SELECT level_id, stars, best_steps, clear_count, last_score
+        FROM player_level_progress
+        WHERE mp_account_id = @mp AND game_id = @gid AND map_id = @mid
+        ORDER BY level_id
+        """, conn))
+    {
+        cmd.Parameters.AddWithValue("mp", mp);
+        cmd.Parameters.AddWithValue("gid", game_id);
+        cmd.Parameters.AddWithValue("mid", mapId);
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            levels.Add(new LevelProgressItem(
+                r.GetInt32(0),
+                r.GetInt32(1),
+                r.IsDBNull(2) ? null : r.GetInt32(2),
+                r.GetInt32(3),
+                r.GetInt64(4)
+            ));
+        }
+    }
+
+    // 补全未通关关卡为空进度（客户端好画地图）
+    var byLevel = levels.ToDictionary(x => x.LevelId);
+    var full = new List<LevelProgressItem>(Match3Rules.LevelsPerMap);
+    for (var i = 1; i <= Match3Rules.LevelsPerMap; i++)
+    {
+        full.Add(byLevel.TryGetValue(i, out var item)
+            ? item
+            : new LevelProgressItem(i, 0, null, 0, 0));
+    }
+
+    var clearedOnMap = full.Count(x => x.Stars > 0);
+
+    return Results.Ok(new PlayerStateResponse(
+        game_id,
+        economy.Energy,
+        economy.EnergyMax,
+        Match3Rules.EnergyRegenSeconds,
+        economy.SecondsToNextEnergy,
+        economy.Gold,
+        economy.UnlockedMap,
+        mapId,
+        Match3Rules.LevelsPerMap,
+        clearedOnMap,
+        Match3Rules.MapUnlockClearCount,
+        full
+    ));
+});
+
+/// <summary>
+/// POST /api/v1/user/level/clear
+/// 通关上报：扣体力、发金币、更新星级/最少步数、可能解锁下一图。
+/// 客户端配置决定棋盘；服务器只校验进度与经济规则。
+/// </summary>
+app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, ClearLevelRequest body) =>
+{
+    if (!TryGetClaims(ctx, jwt, out var claims))
+        return Results.Unauthorized();
+
+    if (string.IsNullOrWhiteSpace(body.GameId))
+        return Results.BadRequest(new { error = "game_id required" });
+    if (body.MapId < 1)
+        return Results.BadRequest(new { error = "map_id must be >= 1" });
+    if (body.LevelId < 1 || body.LevelId > Match3Rules.LevelsPerMap)
+        return Results.BadRequest(new { error = $"level_id must be 1..{Match3Rules.LevelsPerMap}" });
+    if (body.Stars < 1 || body.Stars > 3)
+        return Results.BadRequest(new { error = "stars must be 1..3 for a clear" });
+    if (body.Steps < 0)
+        return Results.BadRequest(new { error = "steps must be >= 0" });
+
+    var mp = Guid.Parse(claims!.Sub);
+    await using var conn = await ds.OpenConnectionAsync();
+    await using var tx = await conn.BeginTransactionAsync();
+
+    try
+    {
+        await EnsureEconomyAsync(conn, mp, body.GameId);
+        var economy = await LoadAndRegenEnergyAsync(conn, mp, body.GameId, persist: true);
+
+        if (body.MapId > economy.UnlockedMap)
+        {
+            await tx.RollbackAsync();
+            return Results.BadRequest(new { error = "map locked", unlocked_map = economy.UnlockedMap });
+        }
+
+        // 同图内：第 1 关始终可玩；第 N 关需 N-1 至少 1 星
+        if (body.LevelId > 1)
+        {
+            await using var prevCmd = new NpgsqlCommand("""
+                SELECT stars FROM player_level_progress
+                WHERE mp_account_id = @mp AND game_id = @gid AND map_id = @mid AND level_id = @lid
+                """, conn);
+            prevCmd.Parameters.AddWithValue("mp", mp);
+            prevCmd.Parameters.AddWithValue("gid", body.GameId);
+            prevCmd.Parameters.AddWithValue("mid", body.MapId);
+            prevCmd.Parameters.AddWithValue("lid", body.LevelId - 1);
+            var prevStars = await prevCmd.ExecuteScalarAsync();
+            if (prevStars is null || (int)prevStars < 1)
+            {
+                await tx.RollbackAsync();
+                return Results.BadRequest(new { error = "previous level not cleared" });
+            }
+        }
+
+        if (economy.Energy < Match3Rules.EnergyCostPerPlay)
+        {
+            await tx.RollbackAsync();
+            return Results.BadRequest(new
+            {
+                error = "not enough energy",
+                energy = economy.Energy,
+                energy_max = economy.EnergyMax,
+                seconds_to_next = economy.SecondsToNextEnergy
+            });
+        }
+
+        var newEnergy = economy.Energy - Match3Rules.EnergyCostPerPlay;
+        var goldGain = Match3Rules.GoldPerStar * body.Stars;
+        var newGold = economy.Gold + goldGain;
+
+        await using (var updEco = new NpgsqlCommand("""
+            UPDATE player_economy SET
+                energy = @en,
+                gold = @gold,
+                energy_updated_at = NOW(),
+                updated_at = NOW()
+            WHERE mp_account_id = @mp AND game_id = @gid
+            """, conn))
+        {
+            updEco.Parameters.AddWithValue("en", newEnergy);
+            updEco.Parameters.AddWithValue("gold", newGold);
+            updEco.Parameters.AddWithValue("mp", mp);
+            updEco.Parameters.AddWithValue("gid", body.GameId);
+            await updEco.ExecuteNonQueryAsync();
+        }
+
+        // 星级取历史最高；步数取历史最少（有记录时）
+        int finalStars;
+        int? finalBestSteps;
+        int clearCount;
+        await using (var upsert = new NpgsqlCommand("""
+            INSERT INTO player_level_progress
+                (mp_account_id, game_id, map_id, level_id, stars, best_steps, clear_count, last_score, updated_at)
+            VALUES (@mp, @gid, @mid, @lid, @stars, @steps, 1, @score, NOW())
+            ON CONFLICT (mp_account_id, game_id, map_id, level_id) DO UPDATE SET
+                stars = GREATEST(player_level_progress.stars, EXCLUDED.stars),
+                best_steps = CASE
+                    WHEN player_level_progress.best_steps IS NULL THEN EXCLUDED.best_steps
+                    ELSE LEAST(player_level_progress.best_steps, EXCLUDED.best_steps)
+                END,
+                clear_count = player_level_progress.clear_count + 1,
+                last_score = EXCLUDED.last_score,
+                updated_at = NOW()
+            RETURNING stars, best_steps, clear_count
+            """, conn))
+        {
+            upsert.Parameters.AddWithValue("mp", mp);
+            upsert.Parameters.AddWithValue("gid", body.GameId);
+            upsert.Parameters.AddWithValue("mid", body.MapId);
+            upsert.Parameters.AddWithValue("lid", body.LevelId);
+            upsert.Parameters.AddWithValue("stars", body.Stars);
+            upsert.Parameters.AddWithValue("steps", body.Steps);
+            upsert.Parameters.AddWithValue("score", body.Score);
+            await using var ur = await upsert.ExecuteReaderAsync();
+            await ur.ReadAsync();
+            finalStars = ur.GetInt32(0);
+            finalBestSteps = ur.IsDBNull(1) ? null : ur.GetInt32(1);
+            clearCount = ur.GetInt32(2);
+        }
+
+        // 当前图已通关关数 >= Match3Rules.MapUnlockClearCount → 解锁下一图
+        int unlockedMap = economy.UnlockedMap;
+        await using (var cntCmd = new NpgsqlCommand("""
+            SELECT COUNT(*) FROM player_level_progress
+            WHERE mp_account_id = @mp AND game_id = @gid AND map_id = @mid AND stars > 0
+            """, conn))
+        {
+            cntCmd.Parameters.AddWithValue("mp", mp);
+            cntCmd.Parameters.AddWithValue("gid", body.GameId);
+            cntCmd.Parameters.AddWithValue("mid", body.MapId);
+            var cleared = Convert.ToInt32(await cntCmd.ExecuteScalarAsync());
+            if (cleared >= Match3Rules.MapUnlockClearCount && body.MapId >= unlockedMap)
+            {
+                unlockedMap = body.MapId + 1;
+                await using var unlock = new NpgsqlCommand("""
+                    UPDATE player_economy SET unlocked_map = GREATEST(unlocked_map, @um), updated_at = NOW()
+                    WHERE mp_account_id = @mp AND game_id = @gid
+                    """, conn);
+                unlock.Parameters.AddWithValue("um", unlockedMap);
+                unlock.Parameters.AddWithValue("mp", mp);
+                unlock.Parameters.AddWithValue("gid", body.GameId);
+                await unlock.ExecuteNonQueryAsync();
+            }
+        }
+
+        await tx.CommitAsync();
+
+        return Results.Ok(new ClearLevelResponse(
+            body.GameId,
+            body.MapId,
+            body.LevelId,
+            finalStars,
+            finalBestSteps,
+            clearCount,
+            newEnergy,
+            Match3Rules.EnergyMaxDefault,
+            newGold,
+            goldGain,
+            unlockedMap
+        ));
+    }
+    catch
+    {
+        await tx.RollbackAsync();
+        throw;
+    }
+});
+
+/// <summary>
+/// POST /api/v1/user/energy/cheat-refill  （仅开发测试：一键回满体力）
+/// </summary>
+app.MapPost("/api/v1/user/energy/cheat-refill", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, CheatRefillRequest body) =>
+{
+    if (!TryGetClaims(ctx, jwt, out var claims))
+        return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(body.GameId))
+        return Results.BadRequest(new { error = "game_id required" });
+
+    var mp = Guid.Parse(claims!.Sub);
+    await using var conn = await ds.OpenConnectionAsync();
+    await EnsureEconomyAsync(conn, mp, body.GameId);
+
+    await using var cmd = new NpgsqlCommand("""
+        UPDATE player_economy SET
+            energy = energy_max,
+            energy_updated_at = NOW(),
+            updated_at = NOW()
+        WHERE mp_account_id = @mp AND game_id = @gid
+        RETURNING energy, energy_max, gold, unlocked_map
+        """, conn);
+    cmd.Parameters.AddWithValue("mp", mp);
+    cmd.Parameters.AddWithValue("gid", body.GameId);
+    await using var r = await cmd.ExecuteReaderAsync();
+    await r.ReadAsync();
+    return Results.Ok(new
+    {
+        energy = r.GetInt32(0),
+        energy_max = r.GetInt32(1),
+        gold = r.GetInt64(2),
+        unlocked_map = r.GetInt32(3)
+    });
+});
+
 app.Run("http://0.0.0.0:8080");
 
 // ---------- helpers ----------
+static class Match3Rules
+{
+    public const int EnergyMaxDefault = 30;
+    public const int EnergyRegenSeconds = 300; // 每点体力 5 分钟
+    public const int LevelsPerMap = 20;
+    public const int MapUnlockClearCount = 10; // 通关 10 关解锁下一图
+    public const int EnergyCostPerPlay = 1;
+    public const long GoldPerStar = 50;
+}
+
 static bool TryGetClaims(HttpContext ctx, SimpleJwt jwt, out JwtClaims? claims)
 {
     claims = null;
@@ -127,6 +413,83 @@ static ProfileResponse ReadProfile(NpgsqlDataReader r) => new(
     r.GetDateTime(7)
 );
 
+static async Task EnsureEconomyAsync(NpgsqlConnection conn, Guid mp, string gameId)
+{
+    await using var cmd = new NpgsqlCommand("""
+        INSERT INTO player_economy (mp_account_id, game_id, energy, energy_max, gold, energy_updated_at)
+        VALUES (@mp, @gid, 30, 30, 0, NOW())
+        ON CONFLICT (mp_account_id, game_id) DO NOTHING
+        """, conn);
+    cmd.Parameters.AddWithValue("mp", mp);
+    cmd.Parameters.AddWithValue("gid", gameId);
+    await cmd.ExecuteNonQueryAsync();
+}
+
+static async Task<EconomySnapshot> LoadAndRegenEnergyAsync(
+    NpgsqlConnection conn, Guid mp, string gameId, bool persist)
+{
+    await using var cmd = new NpgsqlCommand("""
+        SELECT energy, energy_max, gold, energy_updated_at, unlocked_map
+        FROM player_economy
+        WHERE mp_account_id = @mp AND game_id = @gid
+        """, conn);
+    cmd.Parameters.AddWithValue("mp", mp);
+    cmd.Parameters.AddWithValue("gid", gameId);
+
+    await using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync())
+        throw new InvalidOperationException("economy row missing");
+
+    var energy = r.GetInt32(0);
+    var energyMax = r.GetInt32(1);
+    var gold = r.GetInt64(2);
+    var updatedAt = r.GetDateTime(3);
+    var unlockedMap = r.GetInt32(4);
+    await r.CloseAsync();
+
+    // 未满则按时间恢复
+    var secondsToNext = 0;
+    if (energy < energyMax)
+    {
+        var elapsed = (int)Math.Max(0, (DateTime.UtcNow - updatedAt.ToUniversalTime()).TotalSeconds);
+        var gained = elapsed / Match3Rules.EnergyRegenSeconds;
+        if (gained > 0)
+        {
+            var newEnergy = Math.Min(energyMax, energy + gained);
+            var consumedSeconds = gained * Match3Rules.EnergyRegenSeconds;
+            var newUpdatedAt = updatedAt.ToUniversalTime().AddSeconds(consumedSeconds);
+            if (newEnergy >= energyMax)
+                newUpdatedAt = DateTime.UtcNow;
+
+            if (persist && newEnergy != energy)
+            {
+                await using var upd = new NpgsqlCommand("""
+                    UPDATE player_economy SET energy = @en, energy_updated_at = @uat, updated_at = NOW()
+                    WHERE mp_account_id = @mp AND game_id = @gid
+                    """, conn);
+                upd.Parameters.AddWithValue("en", newEnergy);
+                upd.Parameters.AddWithValue("uat", newUpdatedAt);
+                upd.Parameters.AddWithValue("mp", mp);
+                upd.Parameters.AddWithValue("gid", gameId);
+                await upd.ExecuteNonQueryAsync();
+            }
+
+            energy = newEnergy;
+            updatedAt = newUpdatedAt;
+        }
+
+        if (energy < energyMax)
+        {
+            var since = (int)Math.Max(0, (DateTime.UtcNow - updatedAt.ToUniversalTime()).TotalSeconds);
+            secondsToNext = Math.Max(1, Match3Rules.EnergyRegenSeconds - (since % Match3Rules.EnergyRegenSeconds));
+        }
+    }
+
+    return new EconomySnapshot(energy, energyMax, gold, unlockedMap, secondsToNext);
+}
+
+sealed record EconomySnapshot(int Energy, int EnergyMax, long Gold, int UnlockedMap, int SecondsToNextEnergy);
+
 public sealed record HealthResponse(string Status, string Service);
 public sealed record ProfileResponse(
     [property: JsonPropertyName("id")] Guid Id,
@@ -143,7 +506,58 @@ public sealed record UpdateProfileRequest(
     [property: JsonPropertyName("level")] int? Level,
     [property: JsonPropertyName("extra_json")] string? ExtraJson);
 
+public sealed record LevelProgressItem(
+    [property: JsonPropertyName("level_id")] int LevelId,
+    [property: JsonPropertyName("stars")] int Stars,
+    [property: JsonPropertyName("best_steps")] int? BestSteps,
+    [property: JsonPropertyName("clear_count")] int ClearCount,
+    [property: JsonPropertyName("last_score")] long LastScore);
+
+public sealed record PlayerStateResponse(
+    [property: JsonPropertyName("game_id")] string GameId,
+    [property: JsonPropertyName("energy")] int Energy,
+    [property: JsonPropertyName("energy_max")] int EnergyMax,
+    [property: JsonPropertyName("energy_regen_seconds")] int Match3Rules.EnergyRegenSeconds,
+    [property: JsonPropertyName("seconds_to_next_energy")] int SecondsToNextEnergy,
+    [property: JsonPropertyName("gold")] long Gold,
+    [property: JsonPropertyName("unlocked_map")] int UnlockedMap,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("levels_per_map")] int Match3Rules.LevelsPerMap,
+    [property: JsonPropertyName("cleared_on_map")] int ClearedOnMap,
+    [property: JsonPropertyName("map_unlock_clear_count")] int Match3Rules.MapUnlockClearCount,
+    [property: JsonPropertyName("levels")] List<LevelProgressItem> Levels);
+
+public sealed record ClearLevelRequest(
+    [property: JsonPropertyName("game_id")] string GameId,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("level_id")] int LevelId,
+    [property: JsonPropertyName("stars")] int Stars,
+    [property: JsonPropertyName("steps")] int Steps,
+    [property: JsonPropertyName("score")] long Score);
+
+public sealed record ClearLevelResponse(
+    [property: JsonPropertyName("game_id")] string GameId,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("level_id")] int LevelId,
+    [property: JsonPropertyName("stars")] int Stars,
+    [property: JsonPropertyName("best_steps")] int? BestSteps,
+    [property: JsonPropertyName("clear_count")] int ClearCount,
+    [property: JsonPropertyName("energy")] int Energy,
+    [property: JsonPropertyName("energy_max")] int EnergyMax,
+    [property: JsonPropertyName("gold")] long Gold,
+    [property: JsonPropertyName("gold_gained")] long GoldGained,
+    [property: JsonPropertyName("unlocked_map")] int UnlockedMap);
+
+public sealed record CheatRefillRequest(
+    [property: JsonPropertyName("game_id")] string GameId);
+
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(ProfileResponse))]
 [JsonSerializable(typeof(UpdateProfileRequest))]
+[JsonSerializable(typeof(LevelProgressItem))]
+[JsonSerializable(typeof(List<LevelProgressItem>))]
+[JsonSerializable(typeof(PlayerStateResponse))]
+[JsonSerializable(typeof(ClearLevelRequest))]
+[JsonSerializable(typeof(ClearLevelResponse))]
+[JsonSerializable(typeof(CheatRefillRequest))]
 internal partial class AppJsonContext : JsonSerializerContext;

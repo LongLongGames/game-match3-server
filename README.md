@@ -38,10 +38,22 @@ docker compose up -d --build
 |------|------|------|
 | GET | /api/v1/user/profile?game_id=match3 | 资料（无则创建） |
 | PUT | /api/v1/user/profile | 更新资料 |
+| GET | /api/v1/user/state?game_id=match3&map_id=1 | 体力/金币/地图进度（20 关） |
+| POST | /api/v1/user/level/clear | 通关上报（扣体力、发金币、更新星级） |
+| POST | /api/v1/user/energy/cheat-refill | 开发用：体力回满 |
 | POST | /api/v1/leaderboard/score | 提交分数 |
 | GET | /api/v1/leaderboard/top | 排行榜 |
 | GET | /api/v1/leaderboard/me | 自己的排名 |
 | GET | /api/v1/game/status | JWT 验签示例 |
+| GET | /api/v1/game/version-check | 版本/资源检查 |
+
+### Match3 进度约定
+
+- 关卡棋盘配置在**客户端**；服务器只存玩家经济与进度。
+- 体力上限 30，每 300 秒自然恢复 1 点；每局消耗 1 点。
+- 每张地图 20 关；同图需上一关至少 1 星才能打下一关。
+- 当前图累计通关 ≥ 10 关时解锁下一张地图。
+- 通关星级 1–3，金币奖励 = 50 × 星数；星级取历史最高，步数取历史最少。
 
 ## 发布
 
