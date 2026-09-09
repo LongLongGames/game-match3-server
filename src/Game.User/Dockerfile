@@ -17,6 +17,9 @@ RUN dotnet publish Game.User.csproj -c Release -r linux-x64 -o /app/publish /p:P
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled
 WORKDIR /app
 COPY --from=build /app/publish .
-EXPOSE 8080
+# 客户端导表产物（构建上下文仓库根目录 config/）
+COPY config/ /app/config/
 ENV ASPNETCORE_URLS=http://+:8080
+ENV Config__Root=/app/config
+EXPOSE 8080
 ENTRYPOINT ["./Game.User"]

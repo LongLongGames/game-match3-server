@@ -55,6 +55,25 @@ docker compose up -d --build
 - 当前图累计通关 ≥ 10 关时解锁下一张地图。
 - 通关星级 1–3，金币奖励 = 50 × 星数；星级取历史最高，步数取历史最少。
 
+
+
+## 配置表（客户端导表 → Server 读表）
+
+客户端 Unity 菜单 **Tools → 导表** 将 JSON 写到本仓库 `config/`（与 `game-match3-client` 同级时路径为 `../game-match3-server/config`）。
+
+| 文件 | 说明 |
+|------|------|
+| `config/Level.json` | 关卡表（BakingSheet 导出，通关校验存在性 / MaxSteps） |
+| `config/GameRules.json` | 体力、金币、每图关卡数、解锁条件等 |
+
+`game-user` 启动时加载进内存；`POST /api/v1/user/level/clear` 会按表校验关卡是否存在、步数是否超上限（可由 `GameRules.json` 开关关闭）。
+
+Docker：镜像内 `/app/config`，compose 已挂载 `./config` 便于本地改表不重建。
+
+环境变量：`Config__Root`（默认容器内 `/app/config`）。
+
+> 正式模板格式将迁 MessagePack `.bytes`；当前与客户端一致使用 JSON。
+
 ## 发布
 
 Tag `v*` 触发构建：

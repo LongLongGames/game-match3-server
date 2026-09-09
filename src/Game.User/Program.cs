@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using DbUp;
 using Game.Shared.Jwt;
+using Game.Shared.Config;
 using Npgsql;
 
 var builder = WebApplication.CreateSlimBuilder(args);
@@ -18,6 +19,12 @@ var connStr = builder.Configuration.GetConnectionString("Postgres")
 
 builder.Services.AddSingleton(new SimpleJwt(jwtSecret, jwtIssuer));
 builder.Services.AddSingleton(new NpgsqlDataSourceBuilder(connStr).Build());
+
+var configRoot = GameConfigStore.ResolveConfigRoot(
+    builder.Configuration["Config:Root"] ?? builder.Configuration["Config__Root"]);
+var gameConfig = GameConfigStore.Load(configRoot);
+Match3Rules.Apply(gameConfig.Rules);
+builder.Services.AddSingleton(gameConfig);
 
 var app = builder.Build();
 
@@ -172,7 +179,7 @@ app.MapGet("/api/v1/user/state", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDa
 });
 
 /// POST /api/v1/user/level/clear
-app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, ClearLevelRequest body) =>
+app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, GameConfigStore cfg, ClearLevelRequest body) =>
 {
     if (!Helpers.TryGetClaims(ctx, jwt, out var claims))
         return Results.Unauthorized();
@@ -187,6 +194,31 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
         return Results.BadRequest(new { error = "stars must be 1..3 for a clear" });
     if (body.Steps < 0)
         return Results.BadRequest(new { error = "steps must be >= 0" });
+
+    // 配置表校验（客户端导表产物）
+    if (cfg.Rules.ValidateLevelExists)
+    {
+        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow) || levelRow is null)
+        {
+            return Results.BadRequest(new
+            {
+                error = "level not in config",
+                map_id = body.MapId,
+                level_id = body.LevelId,
+                config_levels = cfg.LevelCount
+            });
+        }
+
+        if (cfg.Rules.ValidateStepsAgainstConfig && levelRow.MaxSteps > 0 && body.Steps > levelRow.MaxSteps)
+        {
+            return Results.BadRequest(new
+            {
+                error = "steps exceed max_steps",
+                steps = body.Steps,
+                max_steps = levelRow.MaxSteps
+            });
+        }
+    }
 
     var mp = Guid.Parse(claims!.Sub);
     await using var conn = await ds.OpenConnectionAsync();
@@ -369,14 +401,25 @@ app.Run("http://0.0.0.0:8080");
 
 // ===================== types & helpers (after top-level statements) =====================
 
+/// <summary>运行期规则：启动时从 GameConfigStore 同步，Helpers 仍可读静态字段。</summary>
 static class Match3Rules
 {
-    public const int EnergyMaxDefault = 30;
-    public const int EnergyRegenSeconds = 300;
-    public const int LevelsPerMap = 20;
-    public const int MapUnlockClearCount = 10;
-    public const int EnergyCostPerPlay = 1;
-    public const long GoldPerStar = 50;
+    public static int EnergyMaxDefault = 30;
+    public static int EnergyRegenSeconds = 300;
+    public static int LevelsPerMap = 20;
+    public static int MapUnlockClearCount = 10;
+    public static int EnergyCostPerPlay = 1;
+    public static long GoldPerStar = 50;
+
+    public static void Apply(GameRulesConfig r)
+    {
+        EnergyMaxDefault = r.EnergyMaxDefault;
+        EnergyRegenSeconds = r.EnergyRegenSeconds;
+        LevelsPerMap = r.LevelsPerMap;
+        MapUnlockClearCount = r.MapUnlockClearCount;
+        EnergyCostPerPlay = r.EnergyCostPerPlay;
+        GoldPerStar = r.GoldPerStar;
+    }
 }
 
 static class Helpers

@@ -36,6 +36,10 @@ services:
       ConnectionStrings__Redis: "redis:6379"
       Jwt__Secret: ${JWT_SECRET:-CHANGE_ME_TO_A_LONG_RANDOM_SECRET_IN_PRODUCTION}
       Jwt__Issuer: battle-net-mp
+      Config__Root: /app/config
+    volumes:
+      # 本地联调：客户端导表后直接挂载，免重建镜像
+      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
