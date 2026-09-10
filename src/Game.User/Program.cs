@@ -406,8 +406,8 @@ static class Match3Rules
 {
     public static int EnergyMaxDefault = 30;
     public static int EnergyRegenSeconds = 300;
-    public static int LevelsPerMap = 20;
-    public static int MapUnlockClearCount = 10;
+    public static int LevelsPerMap = 10;
+    public static int MapUnlockClearCount = 5;
     public static int EnergyCostPerPlay = 1;
     public static long GoldPerStar = 50;
 

@@ -11,7 +11,7 @@ Match3 游戏后端。由 [GameTemplate](https://github.com/LongLongGames/GameTe
 | game-gateway | Nginx（8081） |
 | game-user | 玩家资料 |
 | game-leaderboard | 排行榜 |
-| game-core | 玩法 |
+| game-core | 版本/资源检查（弱联网服不做玩法） |
 
 Postgres `5433` · Redis `6380`（与 MP 隔离）
 
@@ -38,7 +38,7 @@ docker compose up -d --build
 |------|------|------|
 | GET | /api/v1/user/profile?game_id=match3 | 资料（无则创建） |
 | PUT | /api/v1/user/profile | 更新资料 |
-| GET | /api/v1/user/state?game_id=match3&map_id=1 | 体力/金币/地图进度（20 关） |
+| GET | /api/v1/user/state?game_id=match3&map_id=1 | 体力/金币/地图进度（10 关） |
 | POST | /api/v1/user/level/clear | 通关上报（扣体力、发金币、更新星级） |
 | POST | /api/v1/user/energy/cheat-refill | 开发用：体力回满 |
 | POST | /api/v1/leaderboard/score | 提交分数 |
@@ -51,28 +51,31 @@ docker compose up -d --build
 
 - 关卡棋盘配置在**客户端**；服务器只存玩家经济与进度。
 - 体力上限 30，每 300 秒自然恢复 1 点；每局消耗 1 点。
-- 每张地图 20 关；同图需上一关至少 1 星才能打下一关。
-- 当前图累计通关 ≥ 10 关时解锁下一张地图。
+- 每张地图 10 关；同图需上一关至少 1 星才能打下一关。
+- 当前图累计通关 ≥ 5 关时解锁下一张地图。
 - 通关星级 1–3，金币奖励 = 50 × 星数；星级取历史最高，步数取历史最少。
 
 
 
-## 配置表（客户端导表 → Server 读表）
+## 配置表（ExcelConfigCompiler → Server）
 
-客户端 Unity 菜单 **Tools → 导表** 将 JSON 写到本仓库 `config/`（与 `game-match3-client` 同级时路径为 `../game-match3-server/config`）。
+客户端 **Tools → Excel Config Compiler** 导出 `.bytes`，同步到本仓库 `config/`（与 client 同级时由导表输出或 CI 拷贝）。
 
 | 文件 | 说明 |
 |------|------|
-| `config/Level.json` | 关卡表（BakingSheet 导出，通关校验存在性 / MaxSteps） |
-| `config/GameRules.json` | 体力、金币、每图关卡数、解锁条件等 |
+| `config/Level.bytes` | 关卡表（**优先**；通关校验存在性 / MaxSteps） |
+| `config/Item.bytes` | 道具表（可选加载） |
+| `config/CheckInReward.bytes` | 签到表（可选加载） |
+| `config/GameRules.json` | 服务端规则：体力、每图关卡数、校验开关（非 ECC） |
+| `config/Level.json` | 仅兼容旧 BakingSheet；有 `.bytes` 时忽略 |
 
-`game-user` 启动时加载进内存；`POST /api/v1/user/level/clear` 会按表校验关卡是否存在、步数是否超上限（可由 `GameRules.json` 开关关闭）。
+`game-user` 启动时读入内存。`POST /api/v1/user/level/clear` 按表校验关卡与步数（可用 `GameRules.json` 关闭）。
 
-Docker：镜像内 `/app/config`，compose 已挂载 `./config` 便于本地改表不重建。
+约定：`LevelsPerMap = 10`（与客户端一致）。
 
-环境变量：`Config__Root`（默认容器内 `/app/config`）。
+Docker：镜像内 `/app/config`，compose 挂载 `./config`。环境变量：`Config__Root`（默认 `/app/config`）。
 
-> 正式模板格式将迁 MessagePack `.bytes`；当前与客户端一致使用 JSON。
+二进制格式：Magic `EXCF` + version + rows（与 [ExcelConfigCompiler](https://github.com/setsuodu/ExcelConfigCompiler) 一致）。
 
 ## 发布
 

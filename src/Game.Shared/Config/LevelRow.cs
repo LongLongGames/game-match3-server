@@ -3,12 +3,14 @@ using System.Text.Json.Serialization;
 namespace Game.Shared.Config;
 
 /// <summary>
-/// 与客户端 BakingSheet 导出的 Level.json 行结构对齐（字段名 PascalCase）。
+/// 与客户端 ExcelConfigCompiler Level 表对齐。
+/// 优先从 Level.bytes 加载；兼容旧 Level.json（Id 可能为字符串）。
 /// </summary>
 public sealed class LevelRow
 {
+    /// <summary>表主键（ECC：int；旧 JSON 可能是 "1_1" 字符串，反序列化时忽略即可）。</summary>
     [JsonPropertyName("Id")]
-    public string? Id { get; set; }
+    public int Id { get; set; }
 
     [JsonPropertyName("MapId")]
     public int MapId { get; set; }

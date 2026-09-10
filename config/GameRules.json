@@ -1,8 +1,8 @@
 {
   "EnergyMaxDefault": 30,
   "EnergyRegenSeconds": 300,
-  "LevelsPerMap": 20,
-  "MapUnlockClearCount": 10,
+  "LevelsPerMap": 10,
+  "MapUnlockClearCount": 5,
   "EnergyCostPerPlay": 1,
   "GoldPerStar": 50,
   "ValidateLevelExists": true,
