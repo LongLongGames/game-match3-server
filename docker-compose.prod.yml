@@ -26,18 +26,15 @@ services:
     restart: unless-stopped
 
   game-user:
-    build:
-      context: .
-      dockerfile: src/Game.User/Dockerfile
+    #build:
+    #  context: .
+    #  dockerfile: src/Game.User/Dockerfile
+    image: ghcr.io/longlonggames/game-match3-server/game-user:v0.2.1
     environment:
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
       ConnectionStrings__Redis: "redis:6379"
       Jwt__Secret: ${JWT_SECRET:-CHANGE_ME_TO_A_LONG_RANDOM_SECRET_IN_PRODUCTION}
       Jwt__Issuer: battle-net-mp
-      Config__Root: /app/config
-    volumes:
-      # 本地联调：客户端导表后直接挂载，免重建镜像
-      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,9 +43,10 @@ services:
     restart: unless-stopped
 
   game-leaderboard:
-    build:
-      context: .
-      dockerfile: src/Game.Leaderboard/Dockerfile
+    #build:
+    #  context: .
+    #  dockerfile: src/Game.Leaderboard/Dockerfile
+    image: ghcr.io/longlonggames/game-match3-server/game-leaderboard:v0.2.1
     environment:
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
       ConnectionStrings__Redis: "redis:6379"
@@ -62,9 +60,10 @@ services:
     restart: unless-stopped
 
   game-core:
-    build:
-      context: .
-      dockerfile: src/Game.Core/Dockerfile
+    #build:
+    #  context: .
+    #  dockerfile: src/Game.Core/Dockerfile
+    image: ghcr.io/longlonggames/game-match3-server/game-core:v0.2.1
     environment:
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
       Jwt__Secret: ${JWT_SECRET:-CHANGE_ME_TO_A_LONG_RANDOM_SECRET_IN_PRODUCTION}
