@@ -26,6 +26,19 @@ docker compose up -d --build
 - 网关：http://localhost:8081
 - 健康检查：`GET /health`
 
+
+## 数据库迁移
+
+迁移已从 API 启动路径拆出，避免多副本竞态。Compose 内 `game-*-migrate` 为一次性 Job（同一镜像 + `--migrate`）。
+
+| 场景 | 命令 |
+|------|------|
+| 只跑迁移 | `docker compose run --rm game-user-migrate`（或 leaderboard/core） |
+| 本地调试 | `dotnet run --project src/Game.User -- --migrate` |
+| 正常启动 | `docker compose up -d --build`（自动先 migrate 再起服务） |
+
+规范详见 [GameTemplate](https://github.com/LongLongGames/GameTemplate)。
+
 ## 与 MP 联调
 
 1. MP 在 http://localhost:8080 运行

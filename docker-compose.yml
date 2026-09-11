@@ -25,6 +25,46 @@ services:
       retries: 10
     restart: unless-stopped
 
+  game-user-migrate:
+    build:
+      context: .
+      dockerfile: src/Game.User/Dockerfile
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  game-leaderboard-migrate:
+    build:
+      context: .
+      dockerfile: src/Game.Leaderboard/Dockerfile
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-user-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  game-core-migrate:
+    build:
+      context: .
+      dockerfile: src/Game.Core/Dockerfile
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-game};Username=${POSTGRES_USER:-game};Password=${POSTGRES_PASSWORD:-game_dev_pwd}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      game-leaderboard-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   game-user:
     build:
       context: .
@@ -36,13 +76,14 @@ services:
       Jwt__Issuer: battle-net-mp
       Config__Root: /app/config
     volumes:
-      # 本地联调：客户端导表后直接挂载，免重建镜像
       - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      game-user-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   game-leaderboard:
@@ -59,6 +100,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      game-leaderboard-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   game-core:
@@ -72,6 +115,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      game-core-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   game-gateway:
