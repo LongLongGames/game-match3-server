@@ -8,12 +8,10 @@ Match3 游戏后端。由 [GameTemplate](https://github.com/LongLongGames/GameTe
 
 | 服务 | 说明 |
 |------|------|
-| game-gateway | Nginx（8081） |
+| game-gateway | Nginx（13180） |
 | game-user | 玩家资料 |
 | game-leaderboard | 排行榜 |
 | game-core | 版本/资源检查（弱联网服不做玩法） |
-
-Postgres `5433` · Redis `6380`（与 MP 隔离）
 
 ## 启动
 
@@ -23,7 +21,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-- 网关：http://localhost:8081
+- 网关：http://localhost:13180
 - 健康检查：`GET /health`
 
 
@@ -41,7 +39,7 @@ docker compose up -d --build
 
 ## 与 MP 联调
 
-1. MP 在 http://localhost:8080 运行
+1. MP 在 http://localhost:11080 运行
 2. 登录取 JWT，请求本服务时带 `Authorization: Bearer <token>`
 3. 或：`./scripts/smoke-test.sh`
 

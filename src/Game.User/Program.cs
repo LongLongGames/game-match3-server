@@ -100,7 +100,7 @@ app.MapPut("/api/v1/user/profile", async (HttpContext ctx, SimpleJwt jwt, Npgsql
         return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(body.GameId))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand("""
@@ -135,7 +135,7 @@ app.MapGet("/api/v1/user/state", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDa
     if (!Helpers.TryGetClaims(ctx, jwt, out var claims))
         return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(game_id))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     var mp = Guid.Parse(claims!.Sub);
     var mapId = map_id is > 0 ? map_id.Value : 1;
@@ -202,38 +202,33 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
         return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(body.GameId))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
     if (body.MapId < 1)
-        return Results.BadRequest(new { error = "map_id must be >= 1" });
+        return Results.Json(new ErrorResponse("map_id must be >= 1"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
     if (body.LevelId < 1 || body.LevelId > Match3Rules.LevelsPerMap)
-        return Results.BadRequest(new { error = $"level_id must be 1..{Match3Rules.LevelsPerMap}" });
+        return Results.Json(new ErrorResponse($"level_id must be 1..{Match3Rules.LevelsPerMap}"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
     if (body.Stars < 1 || body.Stars > 3)
-        return Results.BadRequest(new { error = "stars must be 1..3 for a clear" });
+        return Results.Json(new ErrorResponse("stars must be 1..3 for a clear"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
     if (body.Steps < 0)
-        return Results.BadRequest(new { error = "steps must be >= 0" });
+        return Results.Json(new ErrorResponse("steps must be >= 0"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     // 配置表校验（客户端导表产物）
     if (cfg.Rules.ValidateLevelExists)
     {
         if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow) || levelRow is null)
         {
-            return Results.BadRequest(new
-            {
-                error = "level not in config",
-                map_id = body.MapId,
-                level_id = body.LevelId,
-                config_levels = cfg.LevelCount
-            });
+            return Results.Json(new LevelNotInConfigError(
+                "level not in config", body.MapId, body.LevelId, cfg.LevelCount),
+                AppJsonContext.Default.LevelNotInConfigError,
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         if (cfg.Rules.ValidateStepsAgainstConfig && levelRow.MaxSteps > 0 && body.Steps > levelRow.MaxSteps)
         {
-            return Results.BadRequest(new
-            {
-                error = "steps exceed max_steps",
-                steps = body.Steps,
-                max_steps = levelRow.MaxSteps
-            });
+            return Results.Json(new StepsExceedError(
+                "steps exceed max_steps", body.Steps, levelRow.MaxSteps),
+                AppJsonContext.Default.StepsExceedError,
+                statusCode: StatusCodes.Status400BadRequest);
         }
     }
 
@@ -249,7 +244,9 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
         if (body.MapId > economy.UnlockedMap)
         {
             await tx.RollbackAsync();
-            return Results.BadRequest(new { error = "map locked", unlocked_map = economy.UnlockedMap });
+            return Results.Json(new MapLockedError("map locked", economy.UnlockedMap),
+                AppJsonContext.Default.MapLockedError,
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         if (body.LevelId > 1)
@@ -266,20 +263,17 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
             if (prevStars is null || (int)prevStars < 1)
             {
                 await tx.RollbackAsync();
-                return Results.BadRequest(new { error = "previous level not cleared" });
+                return Results.Json(new ErrorResponse("previous level not cleared"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
             }
         }
 
         if (economy.Energy < Match3Rules.EnergyCostPerPlay)
         {
             await tx.RollbackAsync();
-            return Results.BadRequest(new
-            {
-                error = "not enough energy",
-                energy = economy.Energy,
-                energy_max = economy.EnergyMax,
-                seconds_to_next = economy.SecondsToNextEnergy
-            });
+            return Results.Json(new NotEnoughEnergyError(
+                "not enough energy", economy.Energy, economy.EnergyMax, economy.SecondsToNextEnergy),
+                AppJsonContext.Default.NotEnoughEnergyError,
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         var newEnergy = economy.Energy - Match3Rules.EnergyCostPerPlay;
@@ -388,7 +382,7 @@ app.MapPost("/api/v1/user/energy/cheat-refill", async (HttpContext ctx, SimpleJw
     if (!Helpers.TryGetClaims(ctx, jwt, out var claims))
         return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(body.GameId))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     var mp = Guid.Parse(claims!.Sub);
     await using var conn = await ds.OpenConnectionAsync();
@@ -537,6 +531,31 @@ static class Helpers
 
 sealed record EconomySnapshot(int Energy, int EnergyMax, long Gold, int UnlockedMap, int SecondsToNextEnergy);
 
+
+public sealed record ErrorResponse(
+    [property: JsonPropertyName("error")] string Error);
+
+public sealed record LevelNotInConfigError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("level_id")] int LevelId,
+    [property: JsonPropertyName("config_levels")] int ConfigLevels);
+
+public sealed record StepsExceedError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("steps")] int Steps,
+    [property: JsonPropertyName("max_steps")] int MaxSteps);
+
+public sealed record MapLockedError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("unlocked_map")] int UnlockedMap);
+
+public sealed record NotEnoughEnergyError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("energy")] int Energy,
+    [property: JsonPropertyName("energy_max")] int EnergyMax,
+    [property: JsonPropertyName("seconds_to_next")] int SecondsToNext);
+
 public sealed record HealthResponse(string Status, string Service);
 
 public sealed record ProfileResponse(
@@ -606,6 +625,11 @@ public sealed record CheatRefillResponse(
     [property: JsonPropertyName("gold")] long Gold,
     [property: JsonPropertyName("unlocked_map")] int UnlockedMap);
 
+[JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(LevelNotInConfigError))]
+[JsonSerializable(typeof(StepsExceedError))]
+[JsonSerializable(typeof(MapLockedError))]
+[JsonSerializable(typeof(NotEnoughEnergyError))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(ProfileResponse))]
 [JsonSerializable(typeof(UpdateProfileRequest))]

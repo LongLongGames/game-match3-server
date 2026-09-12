@@ -74,7 +74,7 @@ app.MapGet("/api/v1/game/version-check", async (
         string.IsNullOrWhiteSpace(channel) ||
         string.IsNullOrWhiteSpace(platform))
     {
-        return Results.BadRequest(new { error = "game_id, channel, platform are required" });
+        return Results.Json(new ErrorResponse("game_id, channel, platform are required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
     }
 
     var reg = string.IsNullOrWhiteSpace(region) ? "cn" : region.Trim().ToLowerInvariant();
@@ -112,7 +112,7 @@ app.MapGet("/api/v1/game/version-check", async (
     await using var reader = await cmd.ExecuteReaderAsync();
     if (!await reader.ReadAsync())
     {
-        return Results.NotFound(new { error = "no version config for this channel/platform/region" });
+        return Results.Json(new ErrorResponse("no version config for this channel/platform/region"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status404NotFound);
     }
 
     var cfgClientVer = reader.GetString(0);
@@ -184,6 +184,9 @@ app.MapGet("/api/v1/game/status", (HttpContext ctx, SimpleJwt jwt) =>
 app.Run("http://0.0.0.0:8080");
 
 // ---------- records ----------
+public sealed record ErrorResponse(
+    [property: JsonPropertyName("error")] string Error);
+
 public sealed record HealthResponse(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("service")] string Service,
@@ -217,6 +220,7 @@ public sealed record VersionCheckResponse(
     [property: JsonPropertyName("server_time")] long ServerTime,
     [property: JsonPropertyName("extra_json")] string ExtraJson);
 
+[JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(GameStatusResponse))]
 [JsonSerializable(typeof(ResourceInfo))]

@@ -59,7 +59,7 @@ app.MapPost("/api/v1/leaderboard/score", async (HttpContext ctx, SimpleJwt jwt, 
         return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(body.GameId))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     var boardId = string.IsNullOrWhiteSpace(body.BoardId) ? "default" : body.BoardId;
 
@@ -90,7 +90,7 @@ app.MapPost("/api/v1/leaderboard/score", async (HttpContext ctx, SimpleJwt jwt, 
 app.MapGet("/api/v1/leaderboard/top", async (NpgsqlDataSource ds, string game_id, string? board_id, int limit = 50) =>
 {
     if (string.IsNullOrWhiteSpace(game_id))
-        return Results.BadRequest(new { error = "game_id required" });
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
 
     var bid = string.IsNullOrWhiteSpace(board_id) ? "default" : board_id;
     if (limit < 1) limit = 1;
@@ -170,6 +170,9 @@ static ScoreResponse ReadScore(NpgsqlDataReader r) => new(
     r.GetDateTime(7)
 );
 
+public sealed record ErrorResponse(
+    [property: JsonPropertyName("error")] string Error);
+
 public sealed record HealthResponse(string Status, string Service);
 public sealed record SubmitScoreRequest(
     [property: JsonPropertyName("game_id")] string GameId,
@@ -195,6 +198,7 @@ public sealed record MyRankResponse(
     [property: JsonPropertyName("score")] long Score,
     [property: JsonPropertyName("nickname")] string? Nickname);
 
+[JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(SubmitScoreRequest))]
 [JsonSerializable(typeof(ScoreResponse))]
