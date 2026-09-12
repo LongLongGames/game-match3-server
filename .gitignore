@@ -8,3 +8,4 @@ obj/
 publish/
 *.userprefs
 *.DotSettings.user
+test-results/
