@@ -21,6 +21,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+## 关闭
+```
+# 彻底卸载数据库，清理调试写脏的数据
+docker compose down -v
+```
+
 - 网关：http://localhost:13180
 - 健康检查：`GET /health`
 

@@ -195,6 +195,118 @@ app.MapGet("/api/v1/user/state", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDa
     ));
 });
 
+
+/// POST /api/v1/user/level/enter —— 进关扣体力（按配置 EnergyCostPerPlay）
+app.MapPost("/api/v1/user/level/enter", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, GameConfigStore cfg, EnterLevelRequest body) =>
+{
+    if (!Helpers.TryGetClaims(ctx, jwt, out var claims))
+        return Results.Unauthorized();
+
+    if (string.IsNullOrWhiteSpace(body.GameId))
+        return Results.Json(new ErrorResponse("game_id required"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
+    if (body.MapId < 1)
+        return Results.Json(new ErrorResponse("map_id must be >= 1"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
+    if (body.LevelId < 1 || body.LevelId > Match3Rules.LevelsPerMap)
+        return Results.Json(new ErrorResponse($"level_id must be 1..{Match3Rules.LevelsPerMap}"), AppJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status400BadRequest);
+
+    if (cfg.Rules.ValidateLevelExists)
+    {
+        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow) || levelRow is null)
+        {
+            return Results.Json(new LevelNotInConfigError(
+                "level not in config", body.MapId, body.LevelId, cfg.LevelCount),
+                AppJsonContext.Default.LevelNotInConfigError,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    var mp = Guid.Parse(claims!.Sub);
+    await using var conn = await ds.OpenConnectionAsync();
+    await using var tx = await conn.BeginTransactionAsync();
+
+    try
+    {
+        await Helpers.EnsureEconomyAsync(conn, mp, body.GameId);
+        var economy = await Helpers.LoadAndRegenEnergyAsync(conn, mp, body.GameId, persist: true);
+
+        if (body.MapId > economy.UnlockedMap)
+        {
+            await tx.RollbackAsync();
+            return Results.Json(new MapLockedError("map locked", economy.UnlockedMap),
+                AppJsonContext.Default.MapLockedError,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (body.LevelId > 1)
+        {
+            await using var prevCmd = new NpgsqlCommand("""
+                SELECT stars FROM player_level_progress
+                WHERE mp_account_id = @mp AND game_id = @gid AND map_id = @mid AND level_id = @lid
+                """, conn);
+            prevCmd.Parameters.AddWithValue("mp", mp);
+            prevCmd.Parameters.AddWithValue("gid", body.GameId);
+            prevCmd.Parameters.AddWithValue("mid", body.MapId);
+            prevCmd.Parameters.AddWithValue("lid", body.LevelId - 1);
+            var prevStars = await prevCmd.ExecuteScalarAsync();
+            if (prevStars is null || (int)prevStars < 1)
+            {
+                await tx.RollbackAsync();
+                return Results.Json(new ErrorResponse("previous level not cleared"),
+                    AppJsonContext.Default.ErrorResponse,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+        }
+
+        var cost = Match3Rules.EnergyCostPerPlay;
+        if (economy.Energy < cost)
+        {
+            await tx.RollbackAsync();
+            return Results.Json(new NotEnoughEnergyError(
+                "not enough energy", economy.Energy, economy.EnergyMax, economy.SecondsToNextEnergy),
+                AppJsonContext.Default.NotEnoughEnergyError,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var newEnergy = economy.Energy - cost;
+
+        await using (var updEco = new NpgsqlCommand("""
+            UPDATE player_economy SET
+                energy = @en,
+                energy_updated_at = NOW(),
+                updated_at = NOW()
+            WHERE mp_account_id = @mp AND game_id = @gid
+            """, conn))
+        {
+            updEco.Parameters.AddWithValue("en", newEnergy);
+            updEco.Parameters.AddWithValue("mp", mp);
+            updEco.Parameters.AddWithValue("gid", body.GameId);
+            await updEco.ExecuteNonQueryAsync();
+        }
+
+        await tx.CommitAsync();
+
+        var after = await Helpers.LoadAndRegenEnergyAsync(conn, mp, body.GameId, persist: false);
+
+        return Results.Ok(new EnterLevelResponse(
+            body.GameId,
+            body.MapId,
+            body.LevelId,
+            after.Energy,
+            after.EnergyMax,
+            Match3Rules.EnergyRegenSeconds,
+            after.SecondsToNextEnergy,
+            cost,
+            after.Gold,
+            after.UnlockedMap
+        ));
+    }
+    catch
+    {
+        await tx.RollbackAsync();
+        throw;
+    }
+});
+
 /// POST /api/v1/user/level/clear
 app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, NpgsqlDataSource ds, GameConfigStore cfg, ClearLevelRequest body) =>
 {
@@ -267,29 +379,18 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
             }
         }
 
-        if (economy.Energy < Match3Rules.EnergyCostPerPlay)
-        {
-            await tx.RollbackAsync();
-            return Results.Json(new NotEnoughEnergyError(
-                "not enough energy", economy.Energy, economy.EnergyMax, economy.SecondsToNextEnergy),
-                AppJsonContext.Default.NotEnoughEnergyError,
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        var newEnergy = economy.Energy - Match3Rules.EnergyCostPerPlay;
+        // 通关不再扣体力（进关 POST /level/enter 已扣）
+        var newEnergy = economy.Energy;
         var goldGain = Match3Rules.GoldPerStar * body.Stars;
         var newGold = economy.Gold + goldGain;
 
         await using (var updEco = new NpgsqlCommand("""
             UPDATE player_economy SET
-                energy = @en,
                 gold = @gold,
-                energy_updated_at = NOW(),
                 updated_at = NOW()
             WHERE mp_account_id = @mp AND game_id = @gid
             """, conn))
         {
-            updEco.Parameters.AddWithValue("en", newEnergy);
             updEco.Parameters.AddWithValue("gold", newGold);
             updEco.Parameters.AddWithValue("mp", mp);
             updEco.Parameters.AddWithValue("gid", body.GameId);
@@ -595,7 +696,24 @@ public sealed record PlayerStateResponse(
     [property: JsonPropertyName("map_unlock_clear_count")] int MapUnlockClearCount,
     [property: JsonPropertyName("levels")] List<LevelProgressItem> Levels);
 
-public sealed record ClearLevelRequest(
+public sealed record EnterLevelRequest(
+    [property: JsonPropertyName("game_id")] string GameId,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("level_id")] int LevelId);
+
+public sealed record EnterLevelResponse(
+    [property: JsonPropertyName("game_id")] string GameId,
+    [property: JsonPropertyName("map_id")] int MapId,
+    [property: JsonPropertyName("level_id")] int LevelId,
+    [property: JsonPropertyName("energy")] int Energy,
+    [property: JsonPropertyName("energy_max")] int EnergyMax,
+    [property: JsonPropertyName("energy_regen_seconds")] int EnergyRegenSeconds,
+    [property: JsonPropertyName("seconds_to_next")] int SecondsToNext,
+    [property: JsonPropertyName("energy_cost")] int EnergyCost,
+    [property: JsonPropertyName("gold")] long Gold,
+    [property: JsonPropertyName("unlocked_map")] int UnlockedMap);
+
+record ClearLevelRequest(
     [property: JsonPropertyName("game_id")] string GameId,
     [property: JsonPropertyName("map_id")] int MapId,
     [property: JsonPropertyName("level_id")] int LevelId,
@@ -636,6 +754,8 @@ public sealed record CheatRefillResponse(
 [JsonSerializable(typeof(LevelProgressItem))]
 [JsonSerializable(typeof(List<LevelProgressItem>))]
 [JsonSerializable(typeof(PlayerStateResponse))]
+[JsonSerializable(typeof(EnterLevelRequest))]
+[JsonSerializable(typeof(EnterLevelResponse))]
 [JsonSerializable(typeof(ClearLevelRequest))]
 [JsonSerializable(typeof(ClearLevelResponse))]
 [JsonSerializable(typeof(CheatRefillRequest))]
