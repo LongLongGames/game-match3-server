@@ -211,7 +211,7 @@ app.MapPost("/api/v1/user/level/enter", async (HttpContext ctx, SimpleJwt jwt, N
 
     if (cfg.Rules.ValidateLevelExists)
     {
-        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow) || levelRow is null)
+        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow))
         {
             return Results.Json(new LevelNotInConfigError(
                 "level not in config", body.MapId, body.LevelId, cfg.LevelCount),
@@ -327,7 +327,7 @@ app.MapPost("/api/v1/user/level/clear", async (HttpContext ctx, SimpleJwt jwt, N
     // 配置表校验（客户端导表产物）
     if (cfg.Rules.ValidateLevelExists)
     {
-        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow) || levelRow is null)
+        if (!cfg.TryGetLevel(body.MapId, body.LevelId, out var levelRow))
         {
             return Results.Json(new LevelNotInConfigError(
                 "level not in config", body.MapId, body.LevelId, cfg.LevelCount),
@@ -523,14 +523,15 @@ static class Match3Rules
     public static int EnergyCostPerPlay = 1;
     public static long GoldPerStar = 50;
 
-    public static void Apply(GameRulesConfig r)
+    public static void Apply(GameRules r)
     {
-        EnergyMaxDefault = r.EnergyMaxDefault;
-        EnergyRegenSeconds = r.EnergyRegenSeconds;
-        LevelsPerMap = r.LevelsPerMap;
-        MapUnlockClearCount = r.MapUnlockClearCount;
-        EnergyCostPerPlay = r.EnergyCostPerPlay;
-        GoldPerStar = r.GoldPerStar;
+        // 导表缺失时字段为 0，保留类内默认值
+        if (r.EnergyMax > 0) EnergyMaxDefault = r.EnergyMax;
+        if (r.EnergyRegenSeconds > 0) EnergyRegenSeconds = r.EnergyRegenSeconds;
+        if (r.LevelsPerMap > 0) LevelsPerMap = r.LevelsPerMap;
+        if (r.MapUnlockClearCount > 0) MapUnlockClearCount = r.MapUnlockClearCount;
+        if (r.EnergyCostPerPlay > 0) EnergyCostPerPlay = r.EnergyCostPerPlay;
+        if (r.GoldPerStar > 0) GoldPerStar = r.GoldPerStar;
     }
 }
 

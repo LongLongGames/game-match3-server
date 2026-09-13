@@ -1,28 +1,25 @@
-using System.Text.Json;
-
 namespace Game.Shared.Config;
 
 /// <summary>
-/// 启动时加载 config 目录：
-/// - Level.bytes / Item.bytes / CheckInReward.bytes：ExcelConfigCompiler 产物（优先）
-/// - Level.json：兼容旧客户端 BakingSheet 导出
-/// - GameRules.json：服务端规则（非导表）
+/// 启动时加载 config 目录（ExcelConfigCompiler 导出的 .bytes）：
+/// - Level.bytes / Item.bytes / CheckInReward.bytes / GameRules.bytes
+/// 解析一律走导表生成的 Level / Item / CheckInReward / GameRules 及对应 Table。
 /// </summary>
 public sealed class GameConfigStore
 {
-    public GameRulesConfig Rules { get; }
-    public IReadOnlyDictionary<(int MapId, int LevelId), LevelRow> Levels { get; }
-    public IReadOnlyDictionary<int, ItemRow> Items { get; }
-    public IReadOnlyDictionary<int, CheckInRewardRow> CheckInByDay { get; }
+    public GameRules Rules { get; }
+    public IReadOnlyDictionary<(int MapId, int LevelId), Level> Levels { get; }
+    public IReadOnlyDictionary<int, Item> Items { get; }
+    public IReadOnlyDictionary<int, CheckInReward> CheckInByDay { get; }
     public string ConfigRoot { get; }
     public int LevelCount => Levels.Count;
 
     GameConfigStore(
         string configRoot,
-        GameRulesConfig rules,
-        Dictionary<(int, int), LevelRow> levels,
-        Dictionary<int, ItemRow> items,
-        Dictionary<int, CheckInRewardRow> checkIn)
+        GameRules rules,
+        Dictionary<(int, int), Level> levels,
+        Dictionary<int, Item> items,
+        Dictionary<int, CheckInReward> checkIn)
     {
         ConfigRoot = configRoot;
         Rules = rules;
@@ -31,13 +28,13 @@ public sealed class GameConfigStore
         CheckInByDay = checkIn;
     }
 
-    public bool TryGetLevel(int mapId, int levelId, out LevelRow? row)
-        => Levels.TryGetValue((mapId, levelId), out row);
+    public bool TryGetLevel(int mapId, int levelId, out Level level)
+        => Levels.TryGetValue((mapId, levelId), out level);
 
-    public bool TryGetItem(int id, out ItemRow? row)
-        => Items.TryGetValue(id, out row);
+    public bool TryGetItem(int id, out Item item)
+        => Items.TryGetValue(id, out item);
 
-    public bool TryGetCheckInDay(int day, out CheckInRewardRow? row)
+    public bool TryGetCheckInDay(int day, out CheckInReward row)
         => CheckInByDay.TryGetValue(day, out row);
 
     public static GameConfigStore Load(string configRoot)
@@ -56,63 +53,61 @@ public sealed class GameConfigStore
         return new GameConfigStore(configRoot, rules, levels, items, checkIn);
     }
 
-    static GameRulesConfig LoadRules(string configRoot)
+    static GameRules LoadRules(string configRoot)
     {
-        var rulesPath = Path.Combine(configRoot, "GameRules.json");
-        if (!File.Exists(rulesPath))
+        var bytesPath = Path.Combine(configRoot, "GameRules.bytes");
+        if (!File.Exists(bytesPath))
         {
-            Console.WriteLine($"[GameConfig] GameRules.json missing at {rulesPath}, using defaults");
-            return new GameRulesConfig();
+            Console.WriteLine($"[GameConfig] GameRules.bytes missing at {bytesPath}, using defaults");
+            return default; // 全 0；Match3Rules.Apply 需对 0 做兜底
         }
 
-        var json = File.ReadAllText(rulesPath);
-        var rules = JsonSerializer.Deserialize(json, ConfigJsonContext.Default.GameRulesConfig)
-                    ?? new GameRulesConfig();
-        Console.WriteLine($"[GameConfig] loaded GameRules.json LevelsPerMap={rules.LevelsPerMap}");
+        var data = File.ReadAllBytes(bytesPath);
+        var rows = GameRulesTable.LoadAndCache(data);
+        if (rows.Length == 0)
+        {
+            Console.WriteLine($"[GameConfig] GameRules.bytes empty, using defaults");
+            return default;
+        }
+
+        // 优先 Id=1，否则取第一行
+        GameRules rules = rows[0];
+        if (GameRulesTable.TryGet(1, out var byId))
+            rules = byId;
+
+        Console.WriteLine(
+            $"[GameConfig] loaded GameRules.bytes Id={rules.Id} LevelsPerMap={rules.LevelsPerMap} EnergyMax={rules.EnergyMax}");
         return rules;
     }
 
-    static Dictionary<(int, int), LevelRow> LoadLevels(string configRoot)
+    static Dictionary<(int, int), Level> LoadLevels(string configRoot)
     {
         var bytesPath = Path.Combine(configRoot, "Level.bytes");
-        var jsonPath = Path.Combine(configRoot, "Level.json");
-        var levels = new Dictionary<(int, int), LevelRow>();
+        var levels = new Dictionary<(int, int), Level>();
 
-        if (File.Exists(bytesPath))
+        if (!File.Exists(bytesPath))
         {
-            var data = File.ReadAllBytes(bytesPath);
-            foreach (var row in ReadLevelBytes(data))
-            {
-                if (row.MapId < 1 || row.LevelId < 1) continue;
-                levels[(row.MapId, row.LevelId)] = row;
-            }
-            Console.WriteLine($"[GameConfig] loaded Level.bytes count={levels.Count} from {bytesPath}");
+            Console.WriteLine(
+                $"[GameConfig] Level.bytes missing under {configRoot}. Export via ExcelConfigCompiler first.");
             return levels;
         }
 
-        if (File.Exists(jsonPath))
+        var data = File.ReadAllBytes(bytesPath);
+        var rows = LevelTable.LoadAndCache(data);
+        foreach (var row in rows)
         {
-            var json = File.ReadAllText(jsonPath);
-            var list = JsonSerializer.Deserialize(json, ConfigJsonContext.Default.ListLevelRow)
-                       ?? new List<LevelRow>();
-            foreach (var row in list)
-            {
-                if (row.MapId < 1 || row.LevelId < 1) continue;
-                levels[(row.MapId, row.LevelId)] = row;
-            }
-            Console.WriteLine($"[GameConfig] loaded Level.json count={levels.Count} (legacy) from {jsonPath}");
-            return levels;
+            if (row.MapId < 1 || row.LevelId < 1) continue;
+            levels[(row.MapId, row.LevelId)] = row;
         }
 
-        Console.WriteLine(
-            $"[GameConfig] Level.bytes / Level.json missing under {configRoot}. Export via ExcelConfigCompiler first.");
+        Console.WriteLine($"[GameConfig] loaded Level.bytes count={levels.Count} from {bytesPath}");
         return levels;
     }
 
-    static Dictionary<int, ItemRow> LoadItems(string configRoot)
+    static Dictionary<int, Item> LoadItems(string configRoot)
     {
         var path = Path.Combine(configRoot, "Item.bytes");
-        var map = new Dictionary<int, ItemRow>();
+        var map = new Dictionary<int, Item>();
         if (!File.Exists(path))
         {
             Console.WriteLine($"[GameConfig] Item.bytes missing (optional)");
@@ -120,28 +115,20 @@ public sealed class GameConfigStore
         }
 
         var data = File.ReadAllBytes(path);
-        ExcelConfigBinary.ValidateHeader(data, out _, out int count, out int offset);
-        for (int i = 0; i < count; i++)
+        var rows = ItemTable.LoadAndCache(data);
+        foreach (var row in rows)
         {
-            var row = new ItemRow
-            {
-                Id = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Name = ExcelConfigBinary.ReadString(data, ref offset),
-                Effect = ExcelConfigBinary.ReadString(data, ref offset),
-                Param = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Icon = ExcelConfigBinary.ReadString(data, ref offset),
-                Desc = ExcelConfigBinary.ReadString(data, ref offset),
-            };
             if (row.Id > 0) map[row.Id] = row;
         }
+
         Console.WriteLine($"[GameConfig] loaded Item.bytes count={map.Count}");
         return map;
     }
 
-    static Dictionary<int, CheckInRewardRow> LoadCheckIn(string configRoot)
+    static Dictionary<int, CheckInReward> LoadCheckIn(string configRoot)
     {
         var path = Path.Combine(configRoot, "CheckInReward.bytes");
-        var map = new Dictionary<int, CheckInRewardRow>();
+        var map = new Dictionary<int, CheckInReward>();
         if (!File.Exists(path))
         {
             Console.WriteLine($"[GameConfig] CheckInReward.bytes missing (optional)");
@@ -149,50 +136,14 @@ public sealed class GameConfigStore
         }
 
         var data = File.ReadAllBytes(path);
-        ExcelConfigBinary.ValidateHeader(data, out _, out int count, out int offset);
-        for (int i = 0; i < count; i++)
+        var rows = CheckInRewardTable.LoadAndCache(data);
+        foreach (var row in rows)
         {
-            var row = new CheckInRewardRow
-            {
-                Id = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Day = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Energy = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemId1 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemCount1 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemId2 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemCount2 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemId3 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                ItemCount3 = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Desc = ExcelConfigBinary.ReadString(data, ref offset),
-            };
             if (row.Day > 0) map[row.Day] = row;
         }
+
         Console.WriteLine($"[GameConfig] loaded CheckInReward.bytes days={map.Count}");
         return map;
-    }
-
-    /// <summary>Level 字段顺序与客户端 Generated/Level.cs 一致。</summary>
-    public static List<LevelRow> ReadLevelBytes(ReadOnlySpan<byte> data)
-    {
-        ExcelConfigBinary.ValidateHeader(data, out _, out int count, out int offset);
-        var list = new List<LevelRow>(count);
-        for (int i = 0; i < count; i++)
-        {
-            list.Add(new LevelRow
-            {
-                Id = ExcelConfigBinary.ReadInt32(data, ref offset),
-                MapId = ExcelConfigBinary.ReadInt32(data, ref offset),
-                LevelId = ExcelConfigBinary.ReadInt32(data, ref offset),
-                MaxSteps = ExcelConfigBinary.ReadInt32(data, ref offset),
-                StepsFor3Stars = ExcelConfigBinary.ReadInt32(data, ref offset),
-                StepsFor2Stars = ExcelConfigBinary.ReadInt32(data, ref offset),
-                BoardWidth = ExcelConfigBinary.ReadInt32(data, ref offset),
-                BoardHeight = ExcelConfigBinary.ReadInt32(data, ref offset),
-                Goal = ExcelConfigBinary.ReadString(data, ref offset),
-                GoalValue = ExcelConfigBinary.ReadInt32(data, ref offset),
-            });
-        }
-        return list;
     }
 
     public static string ResolveConfigRoot(string? fromConfiguration)
@@ -212,7 +163,7 @@ public sealed class GameConfigStore
         {
             if (Directory.Exists(c) &&
                 (File.Exists(Path.Combine(c, "Level.bytes")) ||
-                 File.Exists(Path.Combine(c, "Level.json")) ||
+                 File.Exists(Path.Combine(c, "GameRules.bytes")) ||
                  File.Exists(Path.Combine(c, "GameRules.json"))))
                 return Path.GetFullPath(c);
         }
