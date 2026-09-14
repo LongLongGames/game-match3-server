@@ -169,6 +169,32 @@ def main():
         headers=auth,
         allow_non_json=True,
     )
+    expect(
+        "level enter no auth -> 401",
+        "POST",
+        f"{GT_URL}/api/v1/user/level/enter",
+        401,
+        {"game_id": GAME_ID, "map_id": 1, "level_id": 1},
+        allow_empty=True,
+    )
+    expect(
+        "level enter missing game_id -> 400",
+        "POST",
+        f"{GT_URL}/api/v1/user/level/enter",
+        400,
+        {"map_id": 1, "level_id": 1},
+        headers=auth,
+        allow_non_json=True,
+    )
+    expect(
+        "level enter bad level_id -> 400",
+        "POST",
+        f"{GT_URL}/api/v1/user/level/enter",
+        400,
+        {"game_id": GAME_ID, "map_id": 1, "level_id": 99},
+        headers=auth,
+        allow_non_json=True,
+    )
 
     print("--- user happy ---")
     expect(
@@ -208,6 +234,21 @@ def main():
     else:
         # non-fatal for smoke if clear still works
         print(f"  INFO  energy cheat-refill got {code_e}")
+
+    code_en, raw_en = expect(
+        "level enter map1-lv1 -> 200",
+        "POST",
+        f"{GT_URL}/api/v1/user/level/enter",
+        200,
+        {
+            "game_id": GAME_ID,
+            "map_id": 1,
+            "level_id": 1,
+        },
+        headers=auth,
+    )
+    if code_en != 200:
+        print("  INFO  enter failed — check energy / map unlock / previous level rules")
 
     code_c, raw_c = expect(
         "level clear map1-lv1 -> 200",
