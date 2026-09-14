@@ -56,7 +56,8 @@ docker compose down -v
 | GET | /api/v1/user/profile?game_id=match3 | 资料（无则创建） |
 | PUT | /api/v1/user/profile | 更新资料 |
 | GET | /api/v1/user/state?game_id=match3&map_id=1 | 体力/金币/地图进度（10 关） |
-| POST | /api/v1/user/level/clear | 通关上报（扣体力、发金币、更新星级） |
+| POST | /api/v1/user/level/enter | **进关扣体力**（校验地图/上一关/体力，扣 `EnergyCostPerPlay`） |
+| POST | /api/v1/user/level/clear | 通关上报（**不再扣体力**；发金币、更新星级/步数） |
 | POST | /api/v1/user/energy/cheat-refill | 开发用：体力回满 |
 | POST | /api/v1/leaderboard/score | 提交分数 |
 | GET | /api/v1/leaderboard/top | 排行榜 |
@@ -67,7 +68,7 @@ docker compose down -v
 ### Match3 进度约定
 
 - 关卡棋盘配置在**客户端**；服务器只存玩家经济与进度。
-- 体力上限 30，每 300 秒自然恢复 1 点；每局消耗 1 点。
+- 体力上限 30，每 300 秒自然恢复 1 点；**进关**消耗 1 点（`POST /level/enter`），通关不再扣。
 - 每张地图 10 关；同图需上一关至少 1 星才能打下一关。
 - 当前图累计通关 ≥ 5 关时解锁下一张地图。
 - 通关星级 1–3，金币奖励 = 50 × 星数；星级取历史最高，步数取历史最少。
@@ -86,7 +87,7 @@ docker compose down -v
 | `config/GameRules.json` | 服务端规则：体力、每图关卡数、校验开关（非 ECC） |
 | `config/Level.json` | 仅兼容旧 BakingSheet；有 `.bytes` 时忽略 |
 
-`game-user` 启动时读入内存。`POST /api/v1/user/level/clear` 按表校验关卡与步数（可用 `GameRules.json` 关闭）。
+`game-user` 启动时读入内存。`POST /api/v1/user/level/enter` 与 `clear` 均可按表校验关卡（`ValidateLevelExists`）；`clear` 还可校验步数（`ValidateStepsAgainstConfig`，可用 `GameRules.json` 关闭）。
 
 约定：`LevelsPerMap = 10`（与客户端一致）。
 
