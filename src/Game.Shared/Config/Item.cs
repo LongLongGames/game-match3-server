@@ -29,6 +29,54 @@ namespace Game.Shared.Config
             Desc = reader.ReadString();
         }
 
+        public static Item ReadJson(ref JsonReader reader)
+        {
+            int __Id = default;
+            string? __Name = default;
+            string? __Effect = default;
+            int __Param = default;
+            string? __Icon = default;
+            string? __Desc = default;
+            reader.Expect('{');
+            if (!reader.TryExpect('}'))
+            {
+                while (true)
+                {
+                    string name = reader.ReadPropertyName();
+                    switch (name)
+                    {
+                        case "Id": __Id = reader.ReadInt32(); break;
+                        case "Name": __Name = reader.ReadString(); break;
+                        case "Effect": __Effect = reader.ReadString(); break;
+                        case "Param": __Param = reader.ReadInt32(); break;
+                        case "Icon": __Icon = reader.ReadString(); break;
+                        case "Desc": __Desc = reader.ReadString(); break;
+                        default: reader.SkipValue(); break;
+                    }
+                    if (reader.TryExpect('}')) break;
+                    reader.Expect(',');
+                }
+            }
+            return new Item(
+                __Id,
+                __Name,
+                __Effect,
+                __Param,
+                __Icon,
+                __Desc
+            );
+        }
+
+        private Item(int Id, string? Name, string? Effect, int Param, string? Icon, string? Desc)
+        {
+            this.Id = Id;
+            this.Name = Name;
+            this.Effect = Effect;
+            this.Param = Param;
+            this.Icon = Icon;
+            this.Desc = Desc;
+        }
+
         public void Write(ByteWriter writer)
         {
             writer.WriteInt32(Id);
@@ -57,6 +105,24 @@ namespace Game.Shared.Config
             return result;
         }
 
+        public static Item[] LoadJson(string json)
+        {
+            var reader = new JsonReader(json);
+            reader.Expect('[');
+            if (reader.TryExpect(']')) return Array.Empty<Item>();
+            var list = new List<Item>(64);
+            while (true)
+            {
+                list.Add(Item.ReadJson(ref reader));
+                if (reader.TryExpect(']')) break;
+                reader.Expect(',');
+            }
+            return list.ToArray();
+        }
+
+        public static Item[] LoadJsonFromFile(string path)
+            => LoadJson(File.ReadAllText(path));
+
         private static Item[]? _cache;
         private static FrozenDictionary<int, int>? _indexById;
 
@@ -70,7 +136,17 @@ namespace Game.Shared.Config
             return _cache;
         }
 
-        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache。</summary>
+        public static Item[] LoadJsonAndCache(string json)
+        {
+            _cache = LoadJson(json);
+            var builder = new Dictionary<int, int>(_cache.Length);
+            for (int i = 0; i < _cache.Length; i++)
+                builder[_cache[i].Id] = i;
+            _indexById = builder.ToFrozenDictionary();
+            return _cache;
+        }
+
+        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache / LoadJsonAndCache。</summary>
         public static Item Get(int id)
         {
             if (_cache == null || _indexById == null)

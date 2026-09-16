@@ -37,6 +37,70 @@ namespace Game.Shared.Config
             GoalValue = reader.ReadInt32();
         }
 
+        public static Level ReadJson(ref JsonReader reader)
+        {
+            int __Id = default;
+            int __MapId = default;
+            int __LevelId = default;
+            int __MaxSteps = default;
+            int __StepsFor3Stars = default;
+            int __StepsFor2Stars = default;
+            int __BoardWidth = default;
+            int __BoardHeight = default;
+            string? __Goal = default;
+            int __GoalValue = default;
+            reader.Expect('{');
+            if (!reader.TryExpect('}'))
+            {
+                while (true)
+                {
+                    string name = reader.ReadPropertyName();
+                    switch (name)
+                    {
+                        case "Id": __Id = reader.ReadInt32(); break;
+                        case "MapId": __MapId = reader.ReadInt32(); break;
+                        case "LevelId": __LevelId = reader.ReadInt32(); break;
+                        case "MaxSteps": __MaxSteps = reader.ReadInt32(); break;
+                        case "StepsFor3Stars": __StepsFor3Stars = reader.ReadInt32(); break;
+                        case "StepsFor2Stars": __StepsFor2Stars = reader.ReadInt32(); break;
+                        case "BoardWidth": __BoardWidth = reader.ReadInt32(); break;
+                        case "BoardHeight": __BoardHeight = reader.ReadInt32(); break;
+                        case "Goal": __Goal = reader.ReadString(); break;
+                        case "GoalValue": __GoalValue = reader.ReadInt32(); break;
+                        default: reader.SkipValue(); break;
+                    }
+                    if (reader.TryExpect('}')) break;
+                    reader.Expect(',');
+                }
+            }
+            return new Level(
+                __Id,
+                __MapId,
+                __LevelId,
+                __MaxSteps,
+                __StepsFor3Stars,
+                __StepsFor2Stars,
+                __BoardWidth,
+                __BoardHeight,
+                __Goal,
+                __GoalValue
+            );
+        }
+
+        private Level(int Id, int MapId, int LevelId, int MaxSteps, int StepsFor3Stars, int StepsFor2Stars, int BoardWidth, int BoardHeight, string? Goal, int GoalValue)
+        {
+            this.Id = Id;
+            this.MapId = MapId;
+            this.LevelId = LevelId;
+            this.MaxSteps = MaxSteps;
+            this.StepsFor3Stars = StepsFor3Stars;
+            this.StepsFor2Stars = StepsFor2Stars;
+            this.BoardWidth = BoardWidth;
+            this.BoardHeight = BoardHeight;
+            this.Goal = Goal;
+            this.GoalValue = GoalValue;
+        }
+
         public void Write(ByteWriter writer)
         {
             writer.WriteInt32(Id);
@@ -69,6 +133,24 @@ namespace Game.Shared.Config
             return result;
         }
 
+        public static Level[] LoadJson(string json)
+        {
+            var reader = new JsonReader(json);
+            reader.Expect('[');
+            if (reader.TryExpect(']')) return Array.Empty<Level>();
+            var list = new List<Level>(64);
+            while (true)
+            {
+                list.Add(Level.ReadJson(ref reader));
+                if (reader.TryExpect(']')) break;
+                reader.Expect(',');
+            }
+            return list.ToArray();
+        }
+
+        public static Level[] LoadJsonFromFile(string path)
+            => LoadJson(File.ReadAllText(path));
+
         private static Level[]? _cache;
         private static FrozenDictionary<int, int>? _indexById;
 
@@ -82,7 +164,17 @@ namespace Game.Shared.Config
             return _cache;
         }
 
-        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache。</summary>
+        public static Level[] LoadJsonAndCache(string json)
+        {
+            _cache = LoadJson(json);
+            var builder = new Dictionary<int, int>(_cache.Length);
+            for (int i = 0; i < _cache.Length; i++)
+                builder[_cache[i].Id] = i;
+            _indexById = builder.ToFrozenDictionary();
+            return _cache;
+        }
+
+        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache / LoadJsonAndCache。</summary>
         public static Level Get(int id)
         {
             if (_cache == null || _indexById == null)

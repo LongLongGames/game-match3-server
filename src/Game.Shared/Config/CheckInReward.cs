@@ -37,6 +37,70 @@ namespace Game.Shared.Config
             Desc = reader.ReadString();
         }
 
+        public static CheckInReward ReadJson(ref JsonReader reader)
+        {
+            int __Id = default;
+            int __Day = default;
+            int __Energy = default;
+            int __ItemId1 = default;
+            int __ItemCount1 = default;
+            int __ItemId2 = default;
+            int __ItemCount2 = default;
+            int __ItemId3 = default;
+            int __ItemCount3 = default;
+            string? __Desc = default;
+            reader.Expect('{');
+            if (!reader.TryExpect('}'))
+            {
+                while (true)
+                {
+                    string name = reader.ReadPropertyName();
+                    switch (name)
+                    {
+                        case "Id": __Id = reader.ReadInt32(); break;
+                        case "Day": __Day = reader.ReadInt32(); break;
+                        case "Energy": __Energy = reader.ReadInt32(); break;
+                        case "ItemId1": __ItemId1 = reader.ReadInt32(); break;
+                        case "ItemCount1": __ItemCount1 = reader.ReadInt32(); break;
+                        case "ItemId2": __ItemId2 = reader.ReadInt32(); break;
+                        case "ItemCount2": __ItemCount2 = reader.ReadInt32(); break;
+                        case "ItemId3": __ItemId3 = reader.ReadInt32(); break;
+                        case "ItemCount3": __ItemCount3 = reader.ReadInt32(); break;
+                        case "Desc": __Desc = reader.ReadString(); break;
+                        default: reader.SkipValue(); break;
+                    }
+                    if (reader.TryExpect('}')) break;
+                    reader.Expect(',');
+                }
+            }
+            return new CheckInReward(
+                __Id,
+                __Day,
+                __Energy,
+                __ItemId1,
+                __ItemCount1,
+                __ItemId2,
+                __ItemCount2,
+                __ItemId3,
+                __ItemCount3,
+                __Desc
+            );
+        }
+
+        private CheckInReward(int Id, int Day, int Energy, int ItemId1, int ItemCount1, int ItemId2, int ItemCount2, int ItemId3, int ItemCount3, string? Desc)
+        {
+            this.Id = Id;
+            this.Day = Day;
+            this.Energy = Energy;
+            this.ItemId1 = ItemId1;
+            this.ItemCount1 = ItemCount1;
+            this.ItemId2 = ItemId2;
+            this.ItemCount2 = ItemCount2;
+            this.ItemId3 = ItemId3;
+            this.ItemCount3 = ItemCount3;
+            this.Desc = Desc;
+        }
+
         public void Write(ByteWriter writer)
         {
             writer.WriteInt32(Id);
@@ -69,6 +133,24 @@ namespace Game.Shared.Config
             return result;
         }
 
+        public static CheckInReward[] LoadJson(string json)
+        {
+            var reader = new JsonReader(json);
+            reader.Expect('[');
+            if (reader.TryExpect(']')) return Array.Empty<CheckInReward>();
+            var list = new List<CheckInReward>(64);
+            while (true)
+            {
+                list.Add(CheckInReward.ReadJson(ref reader));
+                if (reader.TryExpect(']')) break;
+                reader.Expect(',');
+            }
+            return list.ToArray();
+        }
+
+        public static CheckInReward[] LoadJsonFromFile(string path)
+            => LoadJson(File.ReadAllText(path));
+
         private static CheckInReward[]? _cache;
         private static FrozenDictionary<int, int>? _indexById;
 
@@ -82,7 +164,17 @@ namespace Game.Shared.Config
             return _cache;
         }
 
-        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache。</summary>
+        public static CheckInReward[] LoadJsonAndCache(string json)
+        {
+            _cache = LoadJson(json);
+            var builder = new Dictionary<int, int>(_cache.Length);
+            for (int i = 0; i < _cache.Length; i++)
+                builder[_cache[i].Id] = i;
+            _indexById = builder.ToFrozenDictionary();
+            return _cache;
+        }
+
+        /// <summary>查询阶段不产生 GC（返回值拷贝）。需先 LoadAndCache / LoadJsonAndCache。</summary>
         public static CheckInReward Get(int id)
         {
             if (_cache == null || _indexById == null)
